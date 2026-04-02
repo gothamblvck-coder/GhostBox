@@ -1,4 +1,69 @@
-GhostBox: The Hardened Sandbox for Kali Linux & Parrot OS
+📦 GhostBox
+The Hardened, Zero-Persistence Sandbox for Kali & Parrot OS
+
+GhostBox is a specialized Python-based security wrapper designed to isolate untrusted tools and binaries within Kali Linux and Parrot OS. Built on the industrial-strength Bubblewrap (bwrap) core, it ensures that what happens in the box, stays in the box.
+🚀 Key Features
+
+    Volatile RAM-Home: Mounts a tmpfs over your home directory. All data created during the session evaporates the moment you close the tool.
+
+    Zero-Knowledge Isolation: Your real files, SSH keys, and browser data are physically invisible to the sandboxed process.
+
+    Kernel Hardening: Uses --cap-drop ALL to strip every kernel capability. Even if a tool gains "root" inside the box, it is powerless against your host.
+
+    Identity Masking: Automatically spoofs the hostname to ghost-box and unshares PID namespaces, preventing the tool from seeing other running programs.
+
+⚖️ Why GhostBox?
+
+GhostBox was built for security researchers who find Firejail too bloated or risky due to its SUID-root architecture.
+Feature	GhostBox	Firejail / Others
+Attack Surface	Minimal: Uses unprivileged namespaces.	Large: Uses SUID-root binaries.
+Persistence	None: Everything runs in RAM.	Optional: Often writes to disk by default.
+Speed	Native: Zero-overhead kernel isolation.	Native: Similar performance.
+Simplicity	High: One script, no complex profiles.	Low: Thousands of complex config files.
+🛠 Pros & Cons
+✅ Pros
+
+    Near-Native Performance: No VM overhead.
+
+    Read-Only Core: System directories (/usr, /bin, /etc) are locked as Read-Only.
+
+    Network Ready: Supports tools like nmap while maintaining total filesystem isolation.
+
+    Automated Cleanup: "Die-with-parent" logic prevents zombie processes.
+
+❌ Cons
+
+    Stateless: You must manually move files out if you want to save them.
+
+    CLI Focused: No GUI configurator; designed for the terminal.
+
+    OS Specific: Optimized specifically for Debian-based security distros.
+
+📥 Installation
+Bash
+
+# 1. Install dependencies
+sudo apt update && sudo apt install bwrap -y
+
+# 2. Clone and make executable
+chmod +x ghostbox
+
+# 3. (Optional) Move to your path
+sudo mv ghostbox /usr/local/bin/
+
+📖 Usage
+
+Simply prefix any command with ghostbox:
+Bash
+
+# Safely run a suspicious python script
+ghostbox python3 exploit.py
+
+# Open a browser with an invisible home directory
+ghostbox firefox-esr
+
+# Run network tools with zero host exposure
+ghostbox nmap -sV <target>GhostBox: The Hardened Sandbox for Kali Linux & Parrot OS
 
 GhostBox is a specialized, Python-powered isolation wrapper designed specifically for the security-centric ecosystems of Kali Linux and Parrot OS. While most sandboxes are built for general desktop privacy, GhostBox is engineered for the "Live Environment" mindset: it provides a high-security, zero-persistence container for running untrusted tools, scripts, and binaries without risking your host’s integrity.
 
