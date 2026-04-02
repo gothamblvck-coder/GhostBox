@@ -21,6 +21,7 @@ Persistence	None: Everything runs in RAM.	Optional: Often writes to disk by defa
 Speed	Native: Zero-overhead kernel isolation.	Native: Similar performance.
 Simplicity	High: One script, no complex profiles.	Low: Thousands of complex config files.
 🛠 Pros & Cons
+
 ✅ Pros
 
     Near-Native Performance: No VM overhead.
