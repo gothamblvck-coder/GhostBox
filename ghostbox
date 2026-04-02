@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+import shutil
+
+def launch_ghost_box(target_cmd):
+    # 1. Identify the application
+    app_bin = target_cmd[0]
+    full_path = shutil.which(app_bin)
+    
+    if not full_path:
+        print(f"[!] Error: {app_bin} not found. Is it installed?")
+        return
+
+    print(f"[*] Ghost Box: Shielding {app_bin}...")
+
+    # 2. Define the Sandbox Construction
+    # We use Bubblewrap (bwrap) for industry-grade isolation.
+    bwrap_cmd = [
+        "bwrap",
+        # -- FILESYSTEM ISOLATION --
+        "--ro-bind", "/usr", "/usr",     # Map system binaries (Read-Only)
+        "--ro-bind", "/bin", "/bin",     # Map core tools (Read-Only)
+        "--ro-bind", "/lib", "/lib",     # Map libraries (Read-Only)
+        "--ro-bind", "/lib64", "/lib64", # Map 64-bit libraries (Read-Only)
+        "--ro-bind", "/etc", "/etc",     # Map configs (Read-Only)
+        "--dir", "/tmp",                 # Create a fresh /tmp
+        "--proc", "/proc",               # Isolated process list
+        "--dev", "/dev",                 # Access to basic devices (null, zero, etc.)
+        
+        # -- DATA PRIVACY --
+        # We mount a RAM-disk (tmpfs) over /home so the app sees an empty folder.
+        # Your real files in /home/user are invisible to the app.
+        "--tmpfs", os.path.expanduser("~"), 
+        
+        # -- NETWORK & SECURITY --
+        "--share-net",                   # ENABLES NETWORK (as requested)
+        "--unshare-pid",                 # App cannot see other running programs
+        "--unshare-uts",                 # Isolated hostname
+        "--unshare-ipc",                 # Isolated Inter-process communication
+        "--hostname", "ghost-box",       # Set a generic hostname
+        "--die-with-parent",             # Kill app if the terminal closes
+        "--new-session",                 # Disconnect from the main terminal session
+        "--cap-drop", "ALL",             # Strip ALL kernel "Superpowers" (even for root)
+    ]
+
+    # 3. Execution
+    # We combine the sandbox settings with the user's command
+    final_cmd = bwrap_cmd + target_cmd
+
+    try:
+        # Run the app and wait for it to finish
+        subprocess.run(final_cmd)
+    except KeyboardInterrupt:
+        print("\n[!] Ghost Box: Interrupted by user.")
+    except Exception as e:
+        print(f"[!] Ghost Box Error: {e}")
+    finally:
+        print("[*] Ghost Box: Session closed. All temporary data purged.")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: ghostbox <application> [args]")
+        print("Example: ghostbox firefox https://google.com")
+        sys.exit(1)
+    
+    launch_ghost_box(sys.argv[1:])
