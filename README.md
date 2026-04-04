@@ -18,6 +18,8 @@ Ensure you have the following dependencies on your host system:
     libseccomp-dev (for compiling the shield)
 
     gcc
+    
+    sudo apt install bubblewrap libseccomp-dev gcc
 
 1. Clone the Repository
 Bash
@@ -33,9 +35,6 @@ Bash
 gcc make_bpf.c -o make_bpf -lseccomp && ./make_bpf
 
 Note: You can delete the make_bpf executable after this step.
-
-leave the make_bpf.c, ghostbox.py and the seccomp.bpf file only in the directory
-
 🖥️ Usage
 
 Run any application by passing its binary path to the script:
