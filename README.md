@@ -22,7 +22,7 @@ Ensure you have the following dependencies on your host system:
 1. Clone the Repository
 Bash
 
-git clone https://github.com/your-username/ghostbox.git
+git clone https://github.com/gothamblvck-coder/ghostbox.git
 cd ghostbox
 
 2. Generate the Binary Shield
