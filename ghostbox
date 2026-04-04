@@ -3,66 +3,129 @@ import os
 import sys
 import subprocess
 import shutil
+import ctypes
 
-def launch_ghost_box(target_cmd):
-    # 1. Identify the application
-    app_bin = target_cmd[0]
-    full_path = shutil.which(app_bin)
+# --- Kernel Constants ---
+PR_SET_NO_NEW_PRIVS = 38
+PR_SET_PDEATHSIG = 1
+SIGKILL = 9
+
+def harden_process():
+    libc = ctypes.CDLL('libc.so.6')
+    libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    libc.prctl(PR_SET_PDEATHSIG, SIGKILL)
+
+def launch_ghost_box(target_args):
+    original_bin = target_args[0]
+    full_path = shutil.which(original_bin) or os.path.abspath(original_bin)
     
-    if not full_path:
-        print(f"[!] Error: {app_bin} not found. Is it installed?")
+    if not os.path.exists(full_path):
+        print(f"[!] Error: {original_bin} not found.")
         return
 
-    print(f"[*] Ghost Box: Shielding {app_bin}...")
+    app_dir = os.path.dirname(full_path)
+    bin_name = os.path.basename(full_path)
 
-    # 2. Define the Sandbox Construction
-    # We use Bubblewrap (bwrap) for industry-grade isolation.
     bwrap_cmd = [
         "bwrap",
-        # -- FILESYSTEM ISOLATION --
-        "--ro-bind", "/usr", "/usr",     # Map system binaries (Read-Only)
-        "--ro-bind", "/bin", "/bin",     # Map core tools (Read-Only)
-        "--ro-bind", "/lib", "/lib",     # Map libraries (Read-Only)
-        "--ro-bind", "/lib64", "/lib64", # Map 64-bit libraries (Read-Only)
-        "--ro-bind", "/etc", "/etc",     # Map configs (Read-Only)
-        "--dir", "/tmp",                 # Create a fresh /tmp
-        "--proc", "/proc",               # Isolated process list
-        "--dev", "/dev",                 # Access to basic devices (null, zero, etc.)
+        "--unshare-all",
+        "--share-net",          # <--- Share the network namespace
+        "--new-session",
+        "--die-with-parent",
         
-        # -- DATA PRIVACY --
-        # We mount a RAM-disk (tmpfs) over /home so the app sees an empty folder.
-        # Your real files in /home/user are invisible to the app.
-        "--tmpfs", os.path.expanduser("~"), 
+        # -- 1. THE VOID FILESYSTEM --
+        "--tmpfs", "/", 
+        "--proc", "/proc",
         
-        # -- NETWORK & SECURITY --
-        "--share-net",                   # ENABLES NETWORK (as requested)
-        "--unshare-pid",                 # App cannot see other running programs
-        "--unshare-uts",                 # Isolated hostname
-        "--unshare-ipc",                 # Isolated Inter-process communication
-        "--hostname", "ghost-box",       # Set a generic hostname
-        "--die-with-parent",             # Kill app if the terminal closes
-        "--new-session",                 # Disconnect from the main terminal session
-        "--cap-drop", "ALL",             # Strip ALL kernel "Superpowers" (even for root)
+        # -- 2. MINIMAL DEVICE MAPPING (ANTI-DMA) --
+        "--dev", "/dev",
+        "--dev-bind", "/dev/null", "/dev/null",
+        "--dev-bind", "/dev/urandom", "/dev/urandom",
+        "--dev-bind", "/dev/shm", "/dev/shm",
+        
+        # -- 3. HARDWARE BUS CLOAKING --
+        "--tmpfs", "/sys",      # Hides Motherboard/PCI/Firmware from app
+        
+        # -- 4. SYSTEM CORE (Read-Only) --
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/bin", "/bin",
+        "--ro-bind", "/lib", "/lib",
+        "--ro-bind", "/lib64", "/lib64",
+        "--ro-bind", "/etc/ssl", "/etc/ssl",
+        
+        # --- 5. THE NETWORK FIX (Essential Maps) ---
+        "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+        "--ro-bind", "/etc/hosts", "/etc/hosts",
+        "--ro-bind-try", "/etc/nsswitch.conf", "/etc/nsswitch.conf",
+        
+        # -- 6. APP ISOLATION --
+        "--ro-bind", app_dir, "/app",
+        "--ro-bind-try", "/etc/fonts", "/etc/fonts",
+        "--ro-bind-try", "/usr/share/fonts", "/usr/share/fonts",
+        
+        # -- 7. IDENTITY & PRIVACY --
+        "--cap-drop", "ALL",
+        "--hostname", "obsidian-node",
+        "--unshare-user",
+        "--uid", "1000",
+        "--gid", "1000",
+        "--tmpfs", "/etc/machine-id",
+        
+        # -- 8. AMNESIC RUNTIME --
+        "--dir", "/run/user/1000",
+        "--dir", "/home/ghost",
+        
+        # -- 9. THE "GHOST" ENVIRONMENT --
+        "--clearenv",
+        "--setenv", "PATH", "/usr/bin:/bin:/app",
+        "--setenv", "HOME", "/home/ghost",
+        "--setenv", "XDG_RUNTIME_DIR", "/run/user/1000",
+        "--setenv", "LANG", "en_US.UTF-8",
+        
+        # FORCE SOFTWARE GPU
+        "--setenv", "LIBGL_ALWAYS_SOFTWARE", "1",
+        "--setenv", "GALLIUM_DRIVER", "llvmpipe",
+        "--setenv", "DBUS_SESSION_BUS_ADDRESS", "unix:path=/dev/null",
+
+        "--as-pid-1",
     ]
 
-    # 3. Execution
-    # We combine the sandbox settings with the user's command
-    final_cmd = bwrap_cmd + target_cmd
+    # Display Logic (Wayland > X11)
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+    wayland_display = os.environ.get("WAYLAND_DISPLAY")
+    x11_display = os.environ.get("DISPLAY", ":0")
+
+    wayland_active = False
+    if xdg_runtime and wayland_display:
+        wayland_path = os.path.join(xdg_runtime, wayland_display)
+        if os.path.exists(wayland_path):
+            bwrap_cmd += ["--bind", wayland_path, f"/run/user/1000/{wayland_display}"]
+            bwrap_cmd += ["--setenv", "WAYLAND_DISPLAY", wayland_display]
+            wayland_active = True
+
+    if not wayland_active:
+        socket_num = x11_display.replace(":", "").split(".")[0]
+        x11_socket = f"/tmp/.X11-unix/X{socket_num}"
+        if os.path.exists(x11_socket):
+            bwrap_cmd += ["--bind", x11_socket, x11_socket]
+            bwrap_cmd += ["--setenv", "DISPLAY", x11_display]
+
+    final_bin = os.path.join("/app", bin_name)
+    full_command = bwrap_cmd + [final_bin] + target_args[1:]
+
+    print(f"[*] DEPLOYING OBSIDIAN BOX: {bin_name}")
+    print("[*] STATUS: INTERNET RESTORED | HARDWARE BUS HIDDEN")
 
     try:
-        # Run the app and wait for it to finish
-        subprocess.run(final_cmd)
-    except KeyboardInterrupt:
-        print("\n[!] Ghost Box: Interrupted by user.")
+        subprocess.run(full_command, preexec_fn=harden_process)
     except Exception as e:
-        print(f"[!] Ghost Box Error: {e}")
+        print(f"[!] KERNEL BLOCK: {e}")
     finally:
-        print("[*] Ghost Box: Session closed. All temporary data purged.")
+        print("\n[*] BOX DISSOLVED.")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: ghostbox <application> [args]")
-        print("Example: ghostbox firefox https://google.com")
+        print("Usage: ghostbox <path_to_app>")
         sys.exit(1)
-    
     launch_ghost_box(sys.argv[1:])
+
