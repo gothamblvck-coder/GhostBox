@@ -6,7 +6,7 @@ Wall	Component	Protection Level	Technical Detail
 
 1.	Amnesic FS	Extreme	Root (/) and Home are tmpfs (RAM). Data vanishes on exit.
 
-2.	Binary Sentinel	Hardened	Binary BPF filter kills the app if it touches risky Kernel functions.
+2.	Sentinel	Hardened	Binary BPF filter kills the app if it touches risky Kernel functions.
 
 3.	Landlock >> Prevents anything outside the ghostbox/sandbox from being touched
 
