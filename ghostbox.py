@@ -11,48 +11,31 @@ PR_SET_PDEATHSIG = 1
 SIGKILL = 9
 
 def enable_kernel_lockdown():
-    """ 
-    Automatically ensures the Kernel is in Lockdown Mode.
-    This prevents even a 'Root' user from modifying the running kernel memory.
-    """
     lockdown_file = "/sys/kernel/security/lockdown"
     if not os.path.exists(lockdown_file):
-        print("[!] Kernel Lockdown not supported by this kernel.")
+        print("[!] Warning: Kernel Lockdown not supported.")
         return
 
     with open(lockdown_file, "r") as f:
         current_state = f.read()
 
-    # If [none] is highlighted, it means Lockdown is NOT active.
     if "[none]" in current_state:
         print("[*] Shielding Kernel: Enabling Integrity Lockdown...")
         try:
-            # Briefly use sudo to bolt the door, then it's never used again.
-            subprocess.run([
-                "sudo", "sh", "-c", f"echo integrity > {lockdown_file}"
-            ], check=True)
-            print("[+] Kernel Locked: Integrity Mode Active.")
+            subprocess.run(["sudo", "sh", "-c", f"echo integrity > {lockdown_file}"], check=True)
+            print("[+] Kernel Locked.")
         except subprocess.CalledProcessError:
-            print("[!] Failed to lock kernel. Proceeding with standard isolation.")
+            print("[!] Failed to lock kernel. Security degraded.")
     else:
         print("[*] Kernel Security: Lockdown already active.")
 
 def harden_process():
-    """ 
-    The Unclimbable Wall: Runs INSIDE the sandbox before the app executes. 
-    This ensures the 'Rootless' and 'Privilege-Locked' state.
-    """
     libc = ctypes.CDLL('libc.so.6')
-    
-    # 1. NO_NEW_PRIVS: The ultimate SetUID blocker.
-    # It is physically impossible for the process to ever gain more power.
+    # Force NO_NEW_PRIVS (The point of no return)
     libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-    
-    # 2. PDEATHSIG: Ensure the app dies if the parent script is terminated.
     libc.prctl(PR_SET_PDEATHSIG, SIGKILL)
 
 def launch_ghost_box(target_args):
-    # STEP 1: Bolting the Kernel Door
     enable_kernel_lockdown()
 
     original_bin = target_args[0]
@@ -60,61 +43,58 @@ def launch_ghost_box(target_args):
     
     if not os.path.exists(full_path):
         print(f"[!] Error: {original_bin} not found.")
-        return
+        sys.exit(1)
 
     app_dir = os.path.dirname(full_path)
     bin_name = os.path.basename(full_path)
-    seccomp_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "seccomp.bpf")
+    
+    # CRITICAL: Absolute path to the mandatory seccomp file
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    seccomp_path = os.path.join(script_dir, "seccomp.bpf")
 
-    # STEP 2: Building the Bubble (Bubblewrap command)
+    # --- ENFORCEMENT CHECK ---
+    if not os.path.exists(seccomp_path):
+        print("\n[FATAL ERROR] SECURITY VIOLATION: seccomp.bpf NOT FOUND!")
+        print(f"Expected at: {seccomp_path}")
+        print("The Ghost Box cannot deploy without the Sentinel filter. Deployment aborted.")
+        sys.exit(1) # Kill the script here
+    
+    print("[+] Sentinel Verified: Seccomp filter located.")
+
     bwrap_cmd = [
         "bwrap",
-        "--unshare-all",        # Separate PID, IPC, UTS, Mount, User, Cgroup
-        "--share-net",          # Shared network (use a VPN on the host!)
+        "--unshare-all",
+        "--share-net",
         "--new-session",
         "--die-with-parent",
-        
-        # --- THE MIRAGE (Namespaces) ---
-        "--tmpfs", "/",         # Root is RAM (Amnesia)
+        "--tmpfs", "/",
         "--proc", "/proc",
         "--dev", "/dev",
-        "--tmpfs", "/sys",      # BLACKOUT: Hides hardware serials
-        
-        # --- THE READ-ONLY SYSTEM CORE ---
+        "--tmpfs", "/sys",
         "--ro-bind", "/usr", "/usr",
         "--ro-bind", "/bin", "/bin",
         "--ro-bind", "/lib", "/lib",
         "--ro-bind", "/lib64", "/lib64",
         "--ro-bind", "/etc/ssl", "/etc/ssl",
         "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
-        
-        # --- THE IDENTITY SPOOF ---
         "--hostname", "obsidian-node",
         "--unshare-user",
         "--uid", "1000",
         "--gid", "1000",
         "--tmpfs", "/home/ghost",
         "--dir", "/run/user/1000",
-        
-        # --- THE HARDWARE CLOAK ---
-        "--setenv", "LIBGL_ALWAYS_SOFTWARE", "1", # Bypass GPU driver exploits
+        "--setenv", "LIBGL_ALWAYS_SOFTWARE", "1",
         "--setenv", "GALLIUM_DRIVER", "llvmpipe",
-        
         "--ro-bind", app_dir, "/app",
         "--clearenv",
         "--setenv", "HOME", "/home/ghost",
         "--setenv", "PATH", "/usr/bin:/bin:/app",
         "--setenv", "XDG_RUNTIME_DIR", "/run/user/1000",
         "--as-pid-1",
+        "--seccomp", "3" # Pointing to the FD we pass below
     ]
 
-    # STEP 3: Loading the Sentinel (Seccomp)
-    seccomp_file = None
-    if os.path.exists(seccomp_path):
-        seccomp_file = open(seccomp_path, "rb")
-        bwrap_cmd += ["--seccomp", "3"]
-
-    # STEP 4: Wayland-Only Protection
+    # Wayland setup
     xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
     wayland_display = os.environ.get("WAYLAND_DISPLAY")
     if xdg_runtime and wayland_display:
@@ -126,12 +106,18 @@ def launch_ghost_box(target_args):
     full_command = bwrap_cmd + [final_bin] + target_args[1:]
 
     print(f"[*] DEPLOYING GHOSTBOX: {bin_name}")
+    
+    # Open the file and pass its File Descriptor (3) to the child process
     try:
-        # STEP 5: DROP PRIVILEGES & LAUNCH
-        # preexec_fn drops privileges BEFORE the app code touches the CPU.
-        subprocess.run(full_command, preexec_fn=harden_process, pass_fds=[3] if seccomp_file else [])
+        with open(seccomp_path, "rb") as seccomp_file:
+            subprocess.run(
+                full_command, 
+                preexec_fn=harden_process, 
+                pass_fds=[seccomp_file.fileno()] # Ensures it maps to FD 3
+            )
+    except Exception as e:
+        print(f"[!] Critical Launch Failure: {e}")
     finally:
-        if seccomp_file: seccomp_file.close()
         print("[*] BOX DISSOLVED. AMNESIA COMPLETE.")
 
 if __name__ == "__main__":
